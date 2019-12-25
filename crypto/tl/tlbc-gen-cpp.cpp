@@ -922,7 +922,7 @@ void CppTypeCode::generate_get_tag_param1(std::ostream& os, std::string nl, cons
       match_param_pattern(os, nl, A, 8, "# > 1 && (# & 1)", param_names[0])) {
     return;
   }
-  os << nl << "static inline size_t nat_abs(int x) { return (x > 1) * 2 + (x & 1); }";
+  os << nl << "// static inline size_t nat_abs(int x) { return (x > 1) * 2 + (x & 1); }";
   os << nl << "static signed char ctab[4] = { ";
   for (int i = 0; i < 4; i++) {
     if (i > 0) {
@@ -941,7 +941,7 @@ void CppTypeCode::generate_get_tag_param2(std::ostream& os, std::string nl, cons
       os << ' ' << (int)A[i][j];
     }
   }
-  os << nl << "static inline size_t nat_abs(int x) { return (x > 1) * 2 + (x & 1); }";
+  os << nl << "// static inline size_t nat_abs(int x) { return (x > 1) * 2 + (x & 1); }";
   os << nl << "static signed char ctab[4][4] = { ";
   for (int i = 0; i < 16; i++) {
     if (i > 0) {
@@ -964,7 +964,7 @@ void CppTypeCode::generate_get_tag_param3(std::ostream& os, std::string nl, cons
       }
     }
   }
-  os << nl << "static inline size_t nat_abs(int x) { return (x > 1) * 2 + (x & 1); }";
+  os << nl << "// static inline size_t nat_abs(int x) { return (x > 1) * 2 + (x & 1); }";
   os << nl << "static signed char ctab[4][4][4] = { ";
   for (int i = 0; i < 64; i++) {
     if (i > 0) {
@@ -1021,9 +1021,9 @@ void CppTypeCode::generate_tag_pfx_selector(std::ostream& os, std::string nl, co
   }
   os << "};" << nl << "return ctab[1 + ";
   if (simple) {
-    os << "(long)cs.prefetch_ulong(" << d << ")];";
+    os << "(long long)cs.prefetch_ulong(" << d << ")];";
   } else {
-    os << "(long)cs.bselect" << (d >= min_size ? "(" : "_ext(") << d << ", " << HexConstWriter{mask} << ")];";
+    os << "(long long)cs.bselect" << (d >= min_size ? "(" : "_ext(") << d << ", " << HexConstWriter{mask} << ")];";
   }
 }
 
@@ -1153,7 +1153,7 @@ void CppTypeCode::generate_get_tag_body(std::ostream& os, std::string nl) {
     os << ")) {";
     for (int i = 0; i < l; i++) {
       if (A[i] != 0) {
-        if ((long)A[i] > 0) {
+        if ((long long)A[i] > 0) {
           int j;
           for (j = 0; j < i; j++) {
             if (A[j] == A[i]) {
@@ -1165,7 +1165,7 @@ void CppTypeCode::generate_get_tag_body(std::ostream& os, std::string nl) {
           }
         }
         os << nl << "case " << i << ":";
-        if ((long)A[i] > 0) {
+        if ((long long)A[i] > 0) {
           int j;
           for (j = i + 1; j < l; j++) {
             if (A[j] == A[i]) {

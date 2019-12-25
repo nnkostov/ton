@@ -33,6 +33,8 @@
 #include "vm/cellslice.h"
 #include "vm/excno.hpp"
 
+#include "td/utils/Span.h"
+
 namespace td {
 extern template class td::Cnt<std::string>;
 extern template class td::Ref<td::Cnt<std::string>>;
@@ -54,6 +56,11 @@ class Box;
 class Atom;
 
 using Tuple = td::Cnt<std::vector<StackEntry>>;
+
+template <typename... Args>
+Ref<Tuple> make_tuple_ref(Args&&... args) {
+  return td::make_cnt_ref<std::vector<vm::StackEntry>>(std::vector<vm::StackEntry>{std::forward<Args>(args)...});
+}
 
 struct from_object_t {};
 constexpr from_object_t from_object{};
@@ -128,6 +135,9 @@ class StackEntry {
     tp = t_null;
     return *this;
   }
+  bool set_int(td::RefInt256 value) {
+    return set(t_int, std::move(value));
+  }
   bool empty() const {
     return tp == t_null;
   }
@@ -139,6 +149,12 @@ class StackEntry {
   }
   bool is(int wanted) const {
     return tp == wanted;
+  }
+  bool is_list() const {
+    return is_list(this);
+  }
+  static bool is_list(const StackEntry& se) {
+    return is_list(&se);
   }
   void swap(StackEntry& se) {
     ref.swap(se.ref);
@@ -153,8 +169,13 @@ class StackEntry {
   Type type() const {
     return tp;
   }
+  // mode: +1 = disable short ints, +2 = disable continuations
+  bool serialize(vm::CellBuilder& cb, int mode = 0) const;
+  bool deserialize(vm::CellSlice& cs, int mode = 0);
+  bool deserialize(Ref<Cell> cell, int mode = 0);
 
  private:
+  static bool is_list(const StackEntry* se);
   template <typename T, Type tag>
   Ref<T> dynamic_as() const & {
     return tp == tag ? static_cast<Ref<T>>(ref) : td::Ref<T>{};
@@ -179,8 +200,19 @@ class StackEntry {
   Ref<T> move_as() & {
     return tp == tag ? Ref<T>{td::static_cast_ref(), std::move(ref)} : td::Ref<T>{};
   }
+  bool set(Type _tp, RefAny _ref) {
+    tp = _tp;
+    ref = std::move(_ref);
+    return ref.not_null() || tp == t_null;
+  }
 
  public:
+  static StackEntry make_list(std::vector<StackEntry>&& elems);
+  static StackEntry make_list(const std::vector<StackEntry>& elems);
+  template <typename T1, typename T2>
+  static StackEntry cons(T1&& x, T2&& y) {
+    return StackEntry{make_tuple_ref(std::forward<T1>(x), std::forward<T2>(y))};
+  }
   template <typename T>
   static StackEntry maybe(Ref<T> ref) {
     if (ref.is_null()) {
@@ -246,17 +278,15 @@ class StackEntry {
   }
   void dump(std::ostream& os) const;
   void print_list(std::ostream& os) const;
-  void print_list_tail(std::ostream& os) const;
   std::string to_string() const;
+  std::string to_lisp_string() const;
+
+ private:
+  static void print_list_tail(std::ostream& os, const StackEntry* se);
 };
 
 inline void swap(StackEntry& se1, StackEntry& se2) {
   se1.swap(se2);
-}
-
-template <typename... Args>
-Ref<Tuple> make_tuple_ref(Args&&... args) {
-  return td::make_cnt_ref<std::vector<vm::StackEntry>>(std::vector<vm::StackEntry>{std::forward<Args>(args)...});
 }
 
 const StackEntry& tuple_index(const Tuple& tup, unsigned idx);
@@ -360,6 +390,9 @@ class Stack : public td::CntObject {
   }
   std::vector<StackEntry>::const_iterator from_top(int offs) const {
     return stack.cend() - offs;
+  }
+  td::Span<StackEntry> as_span() const {
+    return stack;
   }
   bool at_least(int req) const {
     return depth() >= req;
@@ -485,7 +518,11 @@ class Stack : public td::CntObject {
       push(std::move(val));
     }
   }
-  void dump(std::ostream& os, bool cr = true) const;
+  // mode: +1 = add eoln, +2 = Lisp-style lists
+  void dump(std::ostream& os, int mode = 1) const;
+  bool serialize(vm::CellBuilder& cb, int mode = 0) const;
+  bool deserialize(vm::CellSlice& cs, int mode = 0);
+  static bool deserialize_to(vm::CellSlice& cs, Ref<Stack>& stack, int mode = 0);
 };
 
 }  // namespace vm

@@ -272,6 +272,12 @@ VarDescrList& VarDescrList::operator+=(const VarDescrList& y) {
 }
 
 VarDescrList VarDescrList::operator|(const VarDescrList& y) const {
+  if (y.unreachable) {
+    return *this;
+  }
+  if (unreachable) {
+    return y;
+  }
   VarDescrList res;
   auto it1 = list.cbegin();
   auto it2 = y.list.cbegin();
@@ -289,7 +295,11 @@ VarDescrList VarDescrList::operator|(const VarDescrList& y) const {
 }
 
 VarDescrList& VarDescrList::operator|=(const VarDescrList& y) {
-  return *this = *this | y;
+  if (y.unreachable) {
+    return *this;
+  } else {
+    return *this = *this | y;
+  }
 }
 
 VarDescrList& VarDescrList::operator&=(const VarDescrList& values) {
@@ -299,16 +309,22 @@ VarDescrList& VarDescrList::operator&=(const VarDescrList& values) {
       *item &= vd;
     }
   }
+  unreachable |= values.unreachable;
   return *this;
 }
 
 VarDescrList& VarDescrList::import_values(const VarDescrList& values) {
-  for (const VarDescr& vd : values.list) {
-    VarDescr* item = operator[](vd.idx);
-    if (item) {
-      item->set_value(vd);
+  if (values.unreachable) {
+    set_unreachable();
+  } else
+    for (auto& vd : list) {
+      auto new_vd = values[vd.idx];
+      if (new_vd) {
+        vd.set_value(*new_vd);
+      } else {
+        vd.clear_value();
+      }
     }
-  }
   return *this;
 }
 
@@ -415,26 +431,25 @@ bool Op::compute_used_vars(const CodeBlob& code, bool edit) {
     }
     case _While: {
       // while (block0 || left) block1;
-      // ... { block0 left block1 } block0 left next
-      VarDescrList after_cond_first{next_var_info};
-      after_cond_first += left;
-      code.compute_used_code_vars(block0, after_cond_first, false);
-      VarDescrList new_var_info{block0->var_info};
+      // ... block0 left { block1 block0 left } next
+      VarDescrList new_var_info{next_var_info};
       bool changes = false;
       do {
-        code.compute_used_code_vars(block1, block0->var_info, changes);
-        VarDescrList after_cond{block1->var_info};
+        VarDescrList after_cond{new_var_info};
         after_cond += left;
         code.compute_used_code_vars(block0, after_cond, changes);
+        code.compute_used_code_vars(block1, block0->var_info, changes);
         std::size_t n = new_var_info.size();
-        new_var_info += block0->var_info;
+        new_var_info += block1->var_info;
         new_var_info.clear_last();
         if (changes) {
           break;
         }
         changes = (new_var_info.size() == n);
       } while (changes <= edit);
-      return set_var_info(std::move(new_var_info));
+      new_var_info += left;
+      code.compute_used_code_vars(block0, new_var_info, edit);
+      return set_var_info(block0->var_info);
     }
     case _Until: {
       // until (block0 || left);
@@ -658,8 +673,11 @@ void Op::prepare_args(VarDescrList values) {
     const VarDescr* val = values[right[i]];
     if (val) {
       args[i].set_value(*val);
-      args[i].clear_unused();
+      // args[i].clear_unused();
+    } else {
+      args[i].clear_value();
     }
+    args[i].clear_unused();
   }
 }
 
@@ -670,7 +688,7 @@ VarDescrList Op::fwd_analyze(VarDescrList values) {
     case _Import:
       break;
     case _Return:
-      values.list.clear();
+      values.set_unreachable();
       break;
     case _IntConst: {
       values.add_newval(left[0]).set_const(int_const);

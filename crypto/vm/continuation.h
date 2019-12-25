@@ -37,6 +37,7 @@ struct ControlRegs {
   Ref<Continuation> c[creg_num];  // c0..c3
   Ref<Cell> d[dreg_num];          // c4..c5
   Ref<Tuple> c7;                  // c7
+  bool clear();
   Ref<Continuation> get_c(unsigned idx) const {
     return idx < creg_num ? c[idx] : Ref<Continuation>{};
   }
@@ -135,6 +136,9 @@ struct ControlRegs {
   ControlRegs& operator&=(const ControlRegs& save);  // clears all c[i]'s which are present in save
   ControlRegs& operator^=(const ControlRegs& save);  // sets c[i]=save.c[i] for all save.c[i] != 0
   ControlRegs& operator^=(ControlRegs&& save);
+  bool serialize(CellBuilder& cb) const;
+  bool deserialize(CellSlice& cs, int mode = 0);
+  bool deserialize(Ref<Cell> root, int mode = 0);
 };
 
 struct ControlData {
@@ -150,6 +154,9 @@ struct ControlData {
   }
   ControlData(int _cp, Ref<Stack> _stack, int _nargs = -1) : stack(std::move(_stack)), nargs(_nargs), cp(_cp) {
   }
+  bool clear();
+  bool serialize(CellBuilder& cb) const;
+  bool deserialize(CellSlice& cs, int mode = 0);
 };
 
 class Continuation : public td::CntObject {
@@ -175,6 +182,15 @@ class Continuation : public td::CntObject {
     return *this;
   }
   ~Continuation() override = default;
+  virtual bool serialize(CellBuilder& cb) const {
+    return false;
+  }
+  bool serialize_ref(CellBuilder& cb) const;
+  static Ref<Continuation> deserialize(CellSlice& cs, int mode = 0);
+  static bool deserialize_to(CellSlice& cs, Ref<Continuation>& cont, int mode = 0) {
+    return (cont = deserialize(cs, mode)).not_null();
+  }
+  static bool deserialize_to(Ref<Cell> cell, Ref<Continuation>& cont, int mode = 0);
 };
 
 class QuitCont : public Continuation {
@@ -187,6 +203,8 @@ class QuitCont : public Continuation {
   int jump(VmState* st) const & override {
     return ~exit_code;
   }
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<QuitCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class ExcQuitCont : public Continuation {
@@ -194,6 +212,8 @@ class ExcQuitCont : public Continuation {
   ExcQuitCont() = default;
   ~ExcQuitCont() override = default;
   int jump(VmState* st) const & override;
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<ExcQuitCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class PushIntCont : public Continuation {
@@ -206,6 +226,8 @@ class PushIntCont : public Continuation {
   ~PushIntCont() override = default;
   int jump(VmState* st) const & override;
   int jump_w(VmState* st) & override;
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<PushIntCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class RepeatCont : public Continuation {
@@ -219,6 +241,8 @@ class RepeatCont : public Continuation {
   ~RepeatCont() override = default;
   int jump(VmState* st) const & override;
   int jump_w(VmState* st) & override;
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<RepeatCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class AgainCont : public Continuation {
@@ -230,6 +254,8 @@ class AgainCont : public Continuation {
   ~AgainCont() override = default;
   int jump(VmState* st) const & override;
   int jump_w(VmState* st) & override;
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<AgainCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class UntilCont : public Continuation {
@@ -241,6 +267,8 @@ class UntilCont : public Continuation {
   ~UntilCont() override = default;
   int jump(VmState* st) const & override;
   int jump_w(VmState* st) & override;
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<UntilCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class WhileCont : public Continuation {
@@ -254,6 +282,8 @@ class WhileCont : public Continuation {
   ~WhileCont() override = default;
   int jump(VmState* st) const & override;
   int jump_w(VmState* st) & override;
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<WhileCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class ArgContExt : public Continuation {
@@ -261,9 +291,13 @@ class ArgContExt : public Continuation {
   Ref<Continuation> ext;
 
  public:
-  ArgContExt(Ref<Continuation> _ext) : data(), ext(_ext) {
+  ArgContExt(Ref<Continuation> _ext) : data(), ext(std::move(_ext)) {
   }
-  ArgContExt(Ref<Continuation> _ext, Ref<Stack> _stack) : data(_stack), ext(_ext) {
+  ArgContExt(Ref<Continuation> _ext, Ref<Stack> _stack) : data(std::move(_stack)), ext(std::move(_ext)) {
+  }
+  ArgContExt(Ref<Continuation> _ext, const ControlData& _cdata) : data(_cdata), ext(std::move(_ext)) {
+  }
+  ArgContExt(Ref<Continuation> _ext, ControlData&& _cdata) : data(std::move(_cdata)), ext(std::move(_ext)) {
   }
   ArgContExt(const ArgContExt&) = default;
   ArgContExt(ArgContExt&&) = default;
@@ -279,6 +313,8 @@ class ArgContExt : public Continuation {
   td::CntObject* make_copy() const override {
     return new ArgContExt{*this};
   }
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<ArgContExt> deserialize(CellSlice& cs, int mode = 0);
 };
 
 class OrdCont : public Continuation {
@@ -295,6 +331,10 @@ class OrdCont : public Continuation {
   //OrdCont(Ref<CellSlice> _code, Ref<Stack> _stack) : data(std::move(_stack)), code(std::move(_code)) {}
   OrdCont(Ref<CellSlice> _code, int _cp, Ref<Stack> _stack, int nargs = -1)
       : data(_cp, std::move(_stack), nargs), code(std::move(_code)) {
+  }
+  OrdCont(Ref<CellSlice> _code, const ControlData& _cdata) : data(_cdata), code(std::move(_code)) {
+  }
+  OrdCont(Ref<CellSlice> _code, ControlData&& _cdata) : data(std::move(_cdata)), code(std::move(_code)) {
   }
   OrdCont(const OrdCont&) = default;
   OrdCont(OrdCont&&) = default;
@@ -327,6 +367,8 @@ class OrdCont : public Continuation {
   Ref<OrdCont> copy_ord() && {
     return Ref<OrdCont>{true, *this};
   }
+  bool serialize(CellBuilder& cb) const override;
+  static Ref<OrdCont> deserialize(CellSlice& cs, int mode = 0);
 };
 
 struct GasLimits {
@@ -375,10 +417,16 @@ struct GasLimits {
   }
 };
 
+struct CommittedState {
+  Ref<vm::Cell> c4, c5;
+  bool committed{false};
+};
+
 class VmState final : public VmStateInterface {
   Ref<CellSlice> code;
   Ref<Stack> stack;
   ControlRegs cr;
+  CommittedState cstate;
   int cp;
   long long steps{0};
   const DispatchTable* dispatch;
@@ -387,6 +435,8 @@ class VmState final : public VmStateInterface {
   GasLimits gas;
   std::vector<Ref<Cell>> libraries;
   int stack_trace{0}, debug_off{0};
+
+  bool chksig_always_succeed{false};
 
  public:
   static constexpr unsigned cell_load_gas_price = 100, cell_create_gas_price = 500, exception_gas_price = 50,
@@ -401,12 +451,22 @@ class VmState final : public VmStateInterface {
   VmState(Ref<Cell> code_cell, Args&&... args)
       : VmState(convert_code_cell(std::move(code_cell)), std::forward<Args>(args)...) {
   }
+  VmState(const VmState&) = delete;
+  VmState(VmState&&) = delete;
+  VmState& operator=(const VmState&) = delete;
+  VmState& operator=(VmState&&) = delete;
   bool set_gas_limits(long long _max, long long _limit, long long _credit = 0);
   bool final_gas_ok() const {
     return gas.final_ok();
   }
   long long gas_consumed() const {
     return gas.gas_consumed();
+  }
+  bool committed() const {
+    return cstate.committed;
+  }
+  const CommittedState& get_committed_state() const {
+    return cstate;
   }
   void consume_gas(long long amount) {
     gas.consume(amount);
@@ -567,6 +627,18 @@ class VmState final : public VmStateInterface {
     return cont->is_unique() ? cont.unique_write().jump_w(this) : cont->jump(this);
   }
   static Ref<CellSlice> convert_code_cell(Ref<Cell> code_cell);
+  void commit() {
+    cstate.c4 = cr.d[0];
+    cstate.c5 = cr.d[1];
+    cstate.committed = true;
+  }
+
+  void set_chksig_always_succeed(bool flag) {
+    chksig_always_succeed = flag;
+  }
+  bool get_chksig_always_succeed() const {
+    return chksig_always_succeed;
+  }
 
  private:
   void init_cregs(bool same_c3 = false, bool push_0 = true);
